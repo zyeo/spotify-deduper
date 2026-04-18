@@ -1,4 +1,9 @@
 const SPOTIFY_AUTHORIZE_URL = "https://accounts.spotify.com/authorize";
+const SPOTIFY_SCOPES = [
+  "playlist-read-private",
+  "playlist-read-collaborative",
+  "user-read-private",
+];
 
 function base64UrlEncode(bytes: Uint8Array) {
   let binary = "";
@@ -39,6 +44,8 @@ export async function getSpotifyAuthorizeUrl() {
   sessionStorage.setItem("spotify_code_verifier", codeVerifier);
   sessionStorage.setItem("spotify_auth_state", state);
 
+  console.log("spotify auth scopes", SPOTIFY_SCOPES);
+
   const params = new URLSearchParams({
     client_id: clientId,
     response_type: "code",
@@ -46,7 +53,7 @@ export async function getSpotifyAuthorizeUrl() {
     code_challenge_method: "S256",
     code_challenge: codeChallenge,
     state,
-    scope: "playlist-read-private playlist-read-collaborative playlist-modify-private playlist-modify-public",
+    scope: SPOTIFY_SCOPES.join(" "),
   });
 
   return `${SPOTIFY_AUTHORIZE_URL}?${params.toString()}`;
