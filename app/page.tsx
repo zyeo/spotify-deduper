@@ -11,12 +11,24 @@ type Playlist = {
     display_name: string | null;
     id: string;
   };
+  tracksTotal: number;
+};
+
+type SpotifyPlaylistItem = {
+  id: string;
+  name: string;
+  owner: {
+    display_name: string | null;
+    id: string;
+  };
   items?: {
     total?: number;
+    href?: string;
   };
-  tracks?: {
-    total?: number;
-  };
+};
+
+type SpotifyPlaylistsResponse = {
+  items: SpotifyPlaylistItem[];
 };
 
 export default function Home() {
@@ -24,6 +36,7 @@ export default function Home() {
   const [isLoadingPlaylists, setIsLoadingPlaylists] = useState(true);
   const [accessToken, setAccessToken] = useState("");
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   const handleLogin = async () => {
@@ -60,8 +73,8 @@ export default function Home() {
           },
         });
 
-        const responseText = await response.text();
-        const data = responseText ? JSON.parse(responseText) : null;
+        const data: SpotifyPlaylistsResponse | { error?: { message?: string } } =
+          await response.json();
 
         if (!response.ok) {
           const errorMessage =
@@ -82,36 +95,14 @@ export default function Home() {
         }
 
         const nextPlaylists = data.items.map((item) => {
-          const playlist = item as {
-            id?: unknown;
-            name?: unknown;
-            owner?: {
-              display_name?: unknown;
-              id?: unknown;
-            };
-            tracks?: {
-              total?: unknown;
-            };
-          };
-
           return {
-            id: typeof playlist.id === "string" ? playlist.id : crypto.randomUUID(),
-            name: typeof playlist.name === "string" ? playlist.name : "Untitled playlist",
+            id: item.id,
+            name: item.name,
             owner: {
-              display_name:
-                typeof playlist.owner?.display_name === "string"
-                  ? playlist.owner.display_name
-                  : null,
-              id: typeof playlist.owner?.id === "string" ? playlist.owner.id : "Unknown owner",
+              display_name: item.owner.display_name,
+              id: item.owner.id,
             },
-            items:
-              typeof (playlist as { items?: { total?: unknown } }).items?.total === "number"
-                ? { total: (playlist as { items?: { total?: number } }).items?.total }
-                : undefined,
-            tracks:
-              typeof playlist.tracks?.total === "number"
-                ? { total: playlist.tracks.total }
-                : undefined,
+            tracksTotal: item.items?.total ?? 0,
           };
         });
 
@@ -171,20 +162,31 @@ export default function Home() {
               </p>
             ) : (
               playlists.map((playlist) => (
-                <div
+                <button
                   key={playlist.id}
-                  className="rounded-xl border border-black/10 p-4"
+                  type="button"
+                  onClick={() => setSelectedPlaylistId(playlist.id)}
+                  className={`rounded-xl border p-4 text-left transition ${
+                    selectedPlaylistId === playlist.id
+                      ? "border-green-500 bg-green-50"
+                      : "border-black/10 bg-white"
+                  }`}
                 >
                   <h2 className="font-medium text-black">{playlist.name}</h2>
                   <p className="text-sm text-black/70">
                     Owner: {playlist.owner?.display_name || playlist.owner?.id || "Unknown owner"}
                   </p>
                   <p className="text-sm text-black/70">
-                    Tracks: {playlist.items?.total ?? playlist.tracks?.total ?? 0}
+                    Tracks: {playlist.tracksTotal}
                   </p>
-                </div>
+                </button>
               ))
             )}
+            <p className="text-sm text-black/70">
+              {selectedPlaylistId
+                ? `Selected playlist ID: ${selectedPlaylistId}`
+                : "Select a playlist to continue."}
+            </p>
           </div>
         ) : null}
       </div>
