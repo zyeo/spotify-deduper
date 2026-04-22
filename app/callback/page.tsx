@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type Status = "loading" | "success" | "error";
 
@@ -8,6 +9,7 @@ export default function CallbackPage() {
   const [status, setStatus] = useState<Status>("loading");
   const [message, setMessage] = useState("Finishing Spotify login...");
   const hasRunRef = useRef(false);
+  const router = useRouter();
 
   useEffect(() => {
     async function finishLogin() {
@@ -95,6 +97,7 @@ export default function CallbackPage() {
         setStatus("success");
         setMessage("Spotify login succeeded. Access token saved to sessionStorage.");
         console.log("success reached");
+        router.replace("/");
       } catch (error) {
         setStatus("error");
         setMessage(
@@ -112,7 +115,7 @@ export default function CallbackPage() {
 
     hasRunRef.current = true;
     finishLogin();
-  }, []);
+  }, [router]);
 
   return (
     <main className="flex min-h-screen items-center justify-center px-6">

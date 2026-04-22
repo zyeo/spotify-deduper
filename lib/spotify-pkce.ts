@@ -3,7 +3,10 @@ const SPOTIFY_SCOPES = [
   "playlist-read-private",
   "playlist-read-collaborative",
   "user-read-private",
+  "playlist-modify-private",
+  "playlist-modify-public",
 ];
+export const SPOTIFY_SCOPE_STRING = SPOTIFY_SCOPES.join(" ");
 
 function base64UrlEncode(bytes: Uint8Array) {
   let binary = "";
@@ -43,8 +46,9 @@ export async function getSpotifyAuthorizeUrl() {
 
   sessionStorage.setItem("spotify_code_verifier", codeVerifier);
   sessionStorage.setItem("spotify_auth_state", state);
+  sessionStorage.setItem("spotify_requested_scope", SPOTIFY_SCOPE_STRING);
 
-  console.log("spotify auth scopes", SPOTIFY_SCOPES);
+  console.log("spotify auth scope string", SPOTIFY_SCOPE_STRING);
 
   const params = new URLSearchParams({
     client_id: clientId,
@@ -53,7 +57,7 @@ export async function getSpotifyAuthorizeUrl() {
     code_challenge_method: "S256",
     code_challenge: codeChallenge,
     state,
-    scope: SPOTIFY_SCOPES.join(" "),
+    scope: SPOTIFY_SCOPE_STRING,
   });
 
   return `${SPOTIFY_AUTHORIZE_URL}?${params.toString()}`;

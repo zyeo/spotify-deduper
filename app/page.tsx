@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { getSpotifyAuthorizeUrl } from "@/lib/spotify-pkce";
+import { getSpotifyAuthorizeUrl, SPOTIFY_SCOPE_STRING } from "@/lib/spotify-pkce";
 
 type Playlist = {
   id: string;
@@ -17,10 +17,22 @@ type Playlist = {
 type Track = {
   playlistItemId: string;
   trackId: string | null;
+  uri: string | null;
   name: string;
   artistNames: string[];
   albumName: string | null;
   durationMs: number | null;
+  addedAt: string | null;
+  playlistPosition: number;
+};
+
+type DuplicateGroup = {
+  trackId: string;
+  name: string;
+  artistNames: string[];
+  entries: Track[];
+  keep: Track;
+  remove: Track[];
 };
 
 type SpotifyPlaylistItem = {
@@ -47,6 +59,7 @@ type SpotifyCurrentUserResponse = {
 type SpotifyPlaylistContentItem = {
   type?: string;
   id?: string | null;
+  uri?: string | null;
   name?: string;
   artists?: Array<{
     name?: string;
@@ -69,6 +82,7 @@ type SpotifyPlaylistItemsEntry = {
 
 type SpotifyPlaylistTracksResponse = {
   items: SpotifyPlaylistItemsEntry[];
+  next: string | null;
 };
 
 function normalizePlaylistEntryToTrack(
@@ -81,12 +95,15 @@ function normalizePlaylistEntryToTrack(
   return {
     playlistItemId: `${content?.id ?? "no-track"}-${entry.added_at ?? "no-added-at"}-${index}`,
     trackId: isTrackLike ? content.id ?? null : null,
+    uri: isTrackLike ? content.uri ?? null : null,
     name: isTrackLike ? content.name ?? "Unavailable track" : "Unavailable track",
     artistNames: isTrackLike
       ? content.artists?.map((artist) => artist.name ?? "Unknown artist") ?? []
       : [],
     albumName: isTrackLike ? content.album?.name ?? null : null,
     durationMs: isTrackLike ? content.duration_ms ?? null : null,
+    addedAt: entry.added_at ?? null,
+    playlistPosition: index + 1,
   };
 }
 
@@ -94,7 +111,6 @@ export default function Home() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isLoadingPlaylists, setIsLoadingPlaylists] = useState(true);
   const [accessToken, setAccessToken] = useState("");
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -120,9 +136,17 @@ export default function Home() {
   useEffect(() => {
     async function loadPlaylists() {
       const storedAccessToken = sessionStorage.getItem("spotify_access_token");
+      const storedRequestedScope = sessionStorage.getItem("spotify_requested_scope");
 
       if (!storedAccessToken) {
         setIsLoadingPlaylists(false);
+        return;
+      }
+
+      if (storedRequestedScope !== SPOTIFY_SCOPE_STRING) {
+        sessionStorage.removeItem("spotify_access_token");
+        setIsLoadingPlaylists(false);
+        setError("Spotify scopes changed. Clear sessionStorage and log in again.");
         return;
       }
 
@@ -142,8 +166,6 @@ export default function Home() {
         if (!meResponse.ok || !("id" in meData)) {
           throw new Error("Unable to load current Spotify user.");
         }
-
-        setCurrentUserId(meData.id);
 
         const response = await fetch("https://api.spotify.com/v1/me/playlists", {
           headers: {
@@ -172,17 +194,19 @@ export default function Home() {
           throw new Error("Spotify playlists response was not in the expected format.");
         }
 
-        const nextPlaylists = data.items.map((item) => {
-          return {
-            id: item.id,
-            name: item.name,
-            owner: {
-              display_name: item.owner.display_name,
-              id: item.owner.id,
-            },
-            tracksTotal: item.items?.total ?? 0,
-          };
-        });
+        const nextPlaylists = data.items
+          .filter((item) => item.owner.id === meData.id)
+          .map((item) => {
+            return {
+              id: item.id,
+              name: item.name,
+              owner: {
+                display_name: item.owner.display_name,
+                id: item.owner.id,
+              },
+              tracksTotal: item.items?.total ?? 0,
+            };
+          });
 
         setPlaylists(nextPlaylists);
       } catch (err) {
@@ -206,60 +230,71 @@ export default function Home() {
         return;
       }
 
-      const selectedPlaylist = playlists.find((playlist) => playlist.id === selectedPlaylistId);
-
-      if (selectedPlaylist && currentUserId && selectedPlaylist.owner.id !== currentUserId) {
-        setTracks([]);
-        setTracksLoading(false);
-        setTracksError(
-          "This playlist is not owned by your account, so Spotify may block access to its items."
-        );
-        return;
-      }
-
       setTracksLoading(true);
       setTracksError("");
 
       try {
-        const response = await fetch(
-          `https://api.spotify.com/v1/playlists/${selectedPlaylistId}/items?limit=50`,
-          {
+        let nextUrl:
+          | string
+          | null = `https://api.spotify.com/v1/playlists/${selectedPlaylistId}/items?limit=50`;
+        const allEntries: SpotifyPlaylistItemsEntry[] = [];
+
+        while (nextUrl) {
+          const response: Response = await fetch(nextUrl, {
             headers: {
               Authorization: `Bearer ${accessToken}`,
             },
+          });
+
+          const data: SpotifyPlaylistTracksResponse | { error?: { message?: string } } =
+            await response.json();
+
+          if (!response.ok) {
+            if (response.status === 403) {
+              throw new Error(
+                "Spotify returned 403 Forbidden. You can only load items for playlists you own or can collaborate on."
+              );
+            }
+
+            const errorMessage =
+              data &&
+              typeof data === "object" &&
+              "error" in data &&
+              data.error &&
+              typeof data.error === "object" &&
+              "message" in data.error
+                ? String(data.error.message)
+                : "Unable to load playlist tracks.";
+
+            throw new Error(errorMessage);
           }
-        );
 
-        const data: SpotifyPlaylistTracksResponse | { error?: { message?: string } } =
-          await response.json();
-
-        if (!response.ok) {
-          if (response.status === 403) {
-            throw new Error(
-              "Spotify returned 403 Forbidden. You can only load items for playlists you own or can collaborate on."
-            );
+          if (
+            !data ||
+            typeof data !== "object" ||
+            !("items" in data) ||
+            !Array.isArray(data.items) ||
+            !("next" in data)
+          ) {
+            throw new Error("Spotify playlist tracks response was not in the expected format.");
           }
 
-          const errorMessage =
-            data &&
-            typeof data === "object" &&
-            "error" in data &&
-            data.error &&
-            typeof data.error === "object" &&
-            "message" in data.error
-              ? String(data.error.message)
-              : "Unable to load playlist tracks.";
-
-          throw new Error(errorMessage);
+          allEntries.push(...data.items);
+          console.log("playlist items page", {
+            itemCount: data.items.length,
+            hasNextPage: data.next !== null,
+          });
+          nextUrl = data.next;
         }
 
-        if (!data || typeof data !== "object" || !("items" in data) || !Array.isArray(data.items)) {
-          throw new Error("Spotify playlist tracks response was not in the expected format.");
-        }
-
-        const nextTracks = data.items.map((entry, index) =>
+        const nextTracks = allEntries.map((entry, index) =>
           normalizePlaylistEntryToTrack(entry, index)
         );
+
+        console.log("playlist pagination finished", {
+          totalRawEntriesFetched: allEntries.length,
+          totalNormalizedTracks: nextTracks.length,
+        });
 
         setTracks(nextTracks);
       } catch (err) {
@@ -273,9 +308,48 @@ export default function Home() {
     }
 
     loadTracks();
-  }, [selectedPlaylistId, accessToken, playlists, currentUserId]);
+  }, [selectedPlaylistId, accessToken]);
 
   const showLogin = !accessToken;
+  const duplicateGroups: DuplicateGroup[] = useMemo(
+    () =>
+      Object.values(
+        tracks.reduce<
+          Record<
+            string,
+            {
+              trackId: string;
+              name: string;
+              artistNames: string[];
+              entries: Track[];
+            }
+          >
+        >((groups, track) => {
+          if (!track.trackId) {
+            return groups;
+          }
+
+          if (!groups[track.trackId]) {
+            groups[track.trackId] = {
+              trackId: track.trackId,
+              name: track.name,
+              artistNames: track.artistNames,
+              entries: [],
+            };
+          }
+
+          groups[track.trackId].entries.push(track);
+          return groups;
+        }, {})
+      )
+        .filter((group) => group.entries.length > 1)
+        .map((group) => ({
+          ...group,
+          keep: group.entries[0],
+          remove: group.entries.slice(1),
+        })),
+    [tracks]
+  );
 
   return (
     <main className="flex min-h-screen items-center justify-center px-6 py-12">
@@ -322,12 +396,11 @@ export default function Home() {
                   key={playlist.id}
                   type="button"
                   onClick={() => setSelectedPlaylistId(playlist.id)}
-                  disabled={Boolean(currentUserId && playlist.owner.id !== currentUserId)}
                   className={`rounded-xl border p-4 text-left transition ${
                     selectedPlaylistId === playlist.id
                       ? "border-green-500 bg-green-50"
                       : "border-black/10 bg-white"
-                  } disabled:cursor-not-allowed disabled:bg-black/5 disabled:text-black/50`}
+                  }`}
                 >
                   <h2 className="font-medium text-black">{playlist.name}</h2>
                   <p className="text-sm text-black/70">
@@ -336,11 +409,6 @@ export default function Home() {
                   <p className="text-sm text-black/70">
                     Tracks: {playlist.tracksTotal}
                   </p>
-                  {currentUserId && playlist.owner.id !== currentUserId ? (
-                    <p className="text-sm text-red-600">
-                      Not fetchable: not owned by your account.
-                    </p>
-                  ) : null}
                 </button>
               ))
             )}
@@ -356,23 +424,82 @@ export default function Home() {
               <p className="text-sm text-red-600">{tracksError}</p>
             ) : null}
             {selectedPlaylistId && !tracksLoading && !tracksError ? (
-              <div className="flex flex-col gap-2 rounded-xl border border-black/10 p-4">
-                <h3 className="font-medium text-black">Track preview</h3>
-                {tracks.length === 0 ? (
-                  <p className="text-sm text-black/70">No tracks found.</p>
-                ) : (
-                  tracks.slice(0, 10).map((track) => (
-                    <div key={track.playlistItemId} className="text-sm text-black/70">
-                      <p className="text-black">{track.name}</p>
-                      <p>
-                        {track.artistNames.length > 0
-                          ? track.artistNames.join(", ")
-                          : "Unknown artist"}
-                      </p>
-                    </div>
-                  ))
-                )}
-              </div>
+              <>
+                <div className="flex flex-col gap-2 rounded-xl border border-black/10 p-4">
+                  <h3 className="font-medium text-black">Track preview</h3>
+                  <p className="text-sm text-black/70">
+                    Total fetched tracks: {tracks.length}
+                  </p>
+                  {tracks.length === 0 ? (
+                    <p className="text-sm text-black/70">No tracks found.</p>
+                  ) : (
+                    tracks.slice(0, 10).map((track) => (
+                      <div key={track.playlistItemId} className="text-sm text-black/70">
+                        <p className="text-black">{track.name}</p>
+                        <p>
+                          {track.artistNames.length > 0
+                            ? track.artistNames.join(", ")
+                            : "Unknown artist"}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="flex flex-col gap-2 rounded-xl border border-black/10 p-4">
+                  <h3 className="font-medium text-black">Duplicate results</h3>
+                  <p className="text-sm text-black/70">
+                    Read-only for now. Use the playlist positions below to remove duplicates manually in Spotify.
+                  </p>
+                  {duplicateGroups.length === 0 ? (
+                    <p className="text-sm text-black/70">No duplicates found.</p>
+                  ) : (
+                    duplicateGroups.map((group) => (
+                      <div
+                        key={group.trackId}
+                        className="flex flex-col gap-1 text-sm text-black/70"
+                      >
+                        <p className="text-black">{group.name}</p>
+                        <p>
+                          {group.artistNames.length > 0
+                            ? group.artistNames.join(", ")
+                            : "Unknown artist"}
+                        </p>
+                        <p>Duplicate count: {group.entries.length}</p>
+                        <p>Kept track count: 1</p>
+                        <p>Removable count: {group.remove.length}</p>
+                        <div className="rounded-lg bg-green-50 p-3">
+                          <p className="text-black">Keep</p>
+                          <p>{group.keep.name}</p>
+                          <p>
+                            {group.keep.artistNames.length > 0
+                              ? group.keep.artistNames.join(", ")
+                              : "Unknown artist"}
+                          </p>
+                          <p>Added at: {group.keep.addedAt ?? "Unknown"}</p>
+                          <p>Playlist position: {group.keep.playlistPosition}</p>
+                        </div>
+                        {group.remove.length > 0 ? (
+                          <div className="flex flex-col gap-2 pl-3">
+                            {group.remove.map((track) => (
+                              <div key={track.playlistItemId}>
+                                <p className="text-black">Manual remove candidate</p>
+                                <p>{track.name}</p>
+                                <p>
+                                  {track.artistNames.length > 0
+                                    ? track.artistNames.join(", ")
+                                    : "Unknown artist"}
+                                </p>
+                                <p>Added at: {track.addedAt ?? "Unknown"}</p>
+                                <p>Playlist position: {track.playlistPosition}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
             ) : null}
           </div>
         ) : null}
